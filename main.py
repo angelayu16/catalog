@@ -6,14 +6,14 @@ import requests
 from datetime import datetime
 
 LOCAL_PHOTO_DIR = "test_dir"
-GMAPS_API_URL = "https://places.googleapis.com/v1/places:searchText"
 VISION_PROMPT = """
 Identify the location of each image. Respond only with the names of the
-locations separated by new lines. Do not enumerate them.
+locations and any supplemental identifying information like address or city.
+Separate by new line and do not enumerate them.
 
 For example, the response might look like:
-Mala Project
-Black Fox Coffee
+Mala Project, 122 1st Ave., New York, NY 10009
+Black Fox Coffee, New York
 Udupi Palace
 """
 
@@ -67,6 +67,34 @@ def get_locations_from_photos(photo_dir_path: str = LOCAL_PHOTO_DIR):
     return locations
 
 
+def get_locations_in_notion():
+    """
+    Get names of locations already in the Notion database.
+    """
+    headers = {
+        "Authorization": f"Bearer {os.environ['NOTION_CATALOG_SECRET']}",
+        "Content-Type": "application/json",
+        "Notion-Version": "2022-06-28",
+    }
+
+    response = requests.post(
+        f"https://api.notion.com/v1/databases/{os.environ['NOTION_LOCATION_ID']}/query",
+        headers=headers,
+    )
+
+    if response.status_code != 200:
+        raise Exception(f"Failed to query database: {response.text}")
+
+    data = response.json()
+    location_names = [
+        result["properties"]["Name"]["title"][0]["text"]["content"]
+        for result in data["results"]
+        if result["properties"]["Name"]["title"]
+    ]
+
+    return location_names
+
+
 def get_gmaps_info(location: str):
     """
     Retrieves a Google Maps location based on the input string and returns its
@@ -90,20 +118,35 @@ def get_gmaps_info(location: str):
     )
     first_match = response.json()["places"][0]
 
+    # Not all places on Google Maps are tagged with a location type
+    location_type = (
+        first_match["primaryTypeDisplayName"]["text"]
+        if "primaryTypeDisplayName" in first_match.keys()
+        else ""
+    )
+
     return (
         first_match["displayName"]["text"],
-        first_match["primaryTypeDisplayName"]["text"],
+        location_type,
         first_match["formattedAddress"],
         first_match["googleMapsUri"],
     )
 
 
 def add_location_to_notion(
-    name: str, location_type: str, address: str, gmaps_link: str
+    name: str,
+    location_type: str,
+    address: str,
+    gmaps_link: str,
+    existing_locations: list,
 ):
     """
     Adds the given location to a Notion database.
     """
+    # Don't add location if it already exists in the database
+    if name in existing_locations:
+        return
+
     headers = {
         "Authorization": f"Bearer {os.environ['NOTION_CATALOG_SECRET']}",
         "Content-Type": "application/json",
@@ -135,6 +178,9 @@ if __name__ == "__main__":
     # Extract locations from photos
     locations = get_locations_from_photos()
 
+    # Get locations already in Notion database
+    existing_locations = get_locations_in_notion()
+
     # Retrieve Google Maps data for each location
     for location in locations:
         (
@@ -143,10 +189,6 @@ if __name__ == "__main__":
             address,
             gmaps_link,
         ) = get_gmaps_info(location)
-        add_location_to_notion(name, location_type, address, gmaps_link)
-
-        print(name)
-        print(location_type)
-        print(address)
-        print(gmaps_link)
-        print("-----")
+        add_location_to_notion(
+            name, location_type, address, gmaps_link, existing_locations
+        )
