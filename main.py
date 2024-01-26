@@ -3,7 +3,7 @@ import json
 import os
 import requests
 
-from datetime import datetime
+from playwright.sync_api import sync_playwright
 
 LOCAL_PHOTO_DIR = "test_dir"
 VISION_PROMPT = """
@@ -67,34 +67,6 @@ def get_locations_from_photos(photo_dir_path: str = LOCAL_PHOTO_DIR):
     return locations
 
 
-def get_locations_in_notion():
-    """
-    Get names of locations already in the Notion database.
-    """
-    headers = {
-        "Authorization": f"Bearer {os.environ['NOTION_CATALOG_SECRET']}",
-        "Content-Type": "application/json",
-        "Notion-Version": "2022-06-28",
-    }
-
-    response = requests.post(
-        f"https://api.notion.com/v1/databases/{os.environ['NOTION_LOCATION_ID']}/query",
-        headers=headers,
-    )
-
-    if response.status_code != 200:
-        raise Exception(f"Failed to query database: {response.text}")
-
-    data = response.json()
-    location_names = [
-        result["properties"]["Name"]["title"][0]["text"]["content"]
-        for result in data["results"]
-        if result["properties"]["Name"]["title"]
-    ]
-
-    return location_names
-
-
 def get_gmaps_info(location: str):
     """
     Retrieves a Google Maps location based on the input string and returns its
@@ -103,12 +75,7 @@ def get_gmaps_info(location: str):
     headers = {
         "Content-Type": "application/json",
         "X-Goog-Api-Key": os.environ["GMAPS_API_KEY"],
-        "X-Goog-FieldMask": (
-            "places.displayName,"
-            "places.formattedAddress,"
-            "places.primaryTypeDisplayName,"
-            "places.googleMapsUri"
-        ),
+        "X-Goog-FieldMask": ("places.displayName," "places.googleMapsUri"),
     }
     payload = {"textQuery": location}
     response = requests.post(
@@ -118,77 +85,74 @@ def get_gmaps_info(location: str):
     )
     first_match = response.json()["places"][0]
 
-    # Not all places on Google Maps are tagged with a location type
-    location_type = (
-        first_match["primaryTypeDisplayName"]["text"]
-        if "primaryTypeDisplayName" in first_match.keys()
-        else ""
-    )
-
     return (
         first_match["displayName"]["text"],
-        location_type,
-        first_match["formattedAddress"],
         first_match["googleMapsUri"],
     )
 
 
-def add_location_to_notion(
-    name: str,
-    location_type: str,
-    address: str,
-    gmaps_link: str,
-    existing_locations: list,
-):
-    """
-    Adds the given location to a Notion database.
-    """
-    # Don't add location if it already exists in the database
-    if name in existing_locations:
-        return
+def save_locations_to_gmaps(gmaps_locations):
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=False)
+        context = browser.new_context()
+        page = context.new_page()
 
-    headers = {
-        "Authorization": f"Bearer {os.environ['NOTION_CATALOG_SECRET']}",
-        "Content-Type": "application/json",
-        "Notion-Version": "2022-06-28",
-    }
+        # Go to Google login page and wait for user to log in
+        page.goto("https://accounts.google.com/signin")
+        page.wait_for_url("https://myaccount.google.com/*")
+        print("Login successful")
 
-    new_location_data = {
-        "Name": {"title": [{"text": {"content": name}}]},
-        "Location Type": {"rich_text": [{"text": {"content": location_type}}]},
-        "Address": {"rich_text": [{"text": {"content": address}}]},
-        "Google Maps Link": {"url": gmaps_link},
-        "Date Added": {"date": {"start": datetime.now().date().isoformat()}},
-    }
+        # Iterate through location links, saving each one to "Want to go" or
+        # skipping if it's already saved
+        for name, link in gmaps_locations:
+            page.goto(link)
 
-    payload = {
-        "parent": {"database_id": os.environ["NOTION_LOCATION_ID"]},
-        "properties": new_location_data,
-    }
-    response = requests.post(
-        "https://api.notion.com/v1/pages",
-        headers=headers,
-        json=payload,
-    )
+            # Wait for either the "Save" or "Saved" button to become visible
+            save_button_selector = 'button[data-value="Save"]'
+            saved_button_selector = 'button[data-value^="Saved"]'
+            page.wait_for_selector(
+                f"{save_button_selector}, {saved_button_selector}",
+                state="visible",
+            )
 
-    return response.status_code
+            if page.is_visible(save_button_selector):
+                # Click "Save" and wait for response
+                with page.expect_response(
+                    lambda response: "/maps/preview/entitylist/createitem"
+                    in response.url
+                    and response.status == 200
+                ) as response_info:
+                    page.click(save_button_selector)
+
+                    # Save location to "Want to go"
+                    want_to_go_selector = (
+                        "xpath=//div[text()='Want to go']"
+                        "/ancestor::div[@role='menuitemradio']"
+                    )
+                    page.wait_for_selector(want_to_go_selector, state="visible")
+                    page.click(want_to_go_selector)
+
+                response = response_info.value
+                if response.ok:
+                    print(f"Successfully saved {name}")
+                else:
+                    print(f"Failed to save {name}, response: {response.status}")
+            elif page.is_visible(saved_button_selector):
+                print(f"{name} is already saved")
+            else:
+                print(f"No 'Save' or 'Saved' button found for {name}")
+
+        browser.close()
 
 
 if __name__ == "__main__":
     # Extract locations from photos
     locations = get_locations_from_photos()
 
-    # Get locations already in Notion database
-    existing_locations = get_locations_in_notion()
-
     # Retrieve Google Maps data for each location
+    gmaps_locations = []
     for location in locations:
-        (
-            name,
-            location_type,
-            address,
-            gmaps_link,
-        ) = get_gmaps_info(location)
-        add_location_to_notion(
-            name, location_type, address, gmaps_link, existing_locations
-        )
+        gmaps_locations.append(get_gmaps_info(location))
+
+    # Save all locations to user's "Want to go" list in Google Maps
+    save_locations_to_gmaps(gmaps_locations)
