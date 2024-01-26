@@ -1,4 +1,5 @@
 import base64
+import collections
 import json
 import os
 import requests
@@ -7,15 +8,45 @@ from playwright.sync_api import sync_playwright
 
 LOCAL_PHOTO_DIR = "test_dir"
 VISION_PROMPT = """
+You will be fed a set of screenshots.
+
 Identify the location of each image. Respond only with the names of the
 locations and any supplemental identifying information like address or city.
+The name and other identifying information should be separated by comma.
+
+If you can identify the source of the image, add that to the line separated by
+semicolon. A source is the person or account that shared the location in the
+screenshot. For example, it might be the handle of the Instagram account that
+shared the place (usually right above/below a screenshotted post, or in the
+upper left corner of a screenshotted Instagram story). If you can't identify the
+account, you can respond with the platform it was shared on (Twitter, Instagram,
+etc.), but you should try to be as specific as possible.
+
+If there is additional information or details from the source, also add that to
+the line, separated by comma + space from the source if there is one, otherwise
+separated by semicolon from the location information. Additional information
+might be specific dishes that are recommended at the location or anything else
+that has been said about the location in the image. Enclose their commentary in
+quotes.
+
+Even if there is no additional information, you should still add a semicolon
+after the location data.
+
+So each line should be of the form:
+<location>,<supplemental info>;<source>, <additional info>
+
+There should never be two consecutive semicolons.
+
 Separate by new line and do not enumerate them.
 
 For example, the response might look like:
-Mala Project, 122 1st Ave., New York, NY 10009
-Black Fox Coffee, New York
-Udupi Palace
+Mala Project, 122 1st Ave., New York, NY 10009;Shared on Instagram
+Black Fox Coffee, New York;Shared on Twitter by @myfriend
+Udupi Palace;Shared on Instagram by @myfriend, \"I love the mysore masala dosa\"
+California Wine Merchant;
 """
+
+ScreenshotData = collections.namedtuple("ScreenshotData", ["name", "link", "note"])
 
 
 def encode_image(image_path: str):
@@ -62,7 +93,8 @@ def get_locations_from_photos(photo_dir_path: str = LOCAL_PHOTO_DIR):
         headers=headers,
         json=payload,
     )
-    locations = response.json()["choices"][0]["message"]["content"].splitlines()
+    response_content = response.json()["choices"][0]["message"]["content"]
+    locations = [line for line in response_content.splitlines() if line]
 
     return locations
 
@@ -85,10 +117,81 @@ def get_gmaps_info(location: str):
     )
     first_match = response.json()["places"][0]
 
-    return (
-        first_match["displayName"]["text"],
-        first_match["googleMapsUri"],
+    return first_match["displayName"]["text"], first_match["googleMapsUri"]
+
+
+def login_to_google(page):
+    page.goto("https://accounts.google.com/signin")
+    page.wait_for_url("https://myaccount.google.com/*")
+    print("Login successful")
+
+
+def is_new_location(page, name, link):
+    page.goto(link)
+    save_button_selector = 'button[data-value="Save"]'
+    saved_button_selector = 'button[data-value^="Saved"]'
+    page.wait_for_selector(
+        f"{save_button_selector}, {saved_button_selector}", state="visible"
     )
+
+    if page.is_visible(save_button_selector):
+        return True
+    elif page.is_visible(saved_button_selector):
+        print(f"{name} is already saved")
+        return False
+    else:
+        print(f"No 'Save' or 'Saved' button found for {name}")
+        return False
+
+
+def save_new_location(page, name, note):
+    with page.expect_response(
+        lambda response: "/maps/preview/entitylist/createitem" in response.url
+        and response.status == 200
+    ) as response_info:
+        # Click "Save"
+        page.click('button[data-value="Save"]')
+
+        # Click "Want to go" and wait for response
+        want_to_go_selector = (
+            "xpath=//div[text()='Want to go']" "/ancestor::div[@role='menuitemradio']"
+        )
+        page.wait_for_selector(want_to_go_selector, state="visible")
+        page.click(want_to_go_selector)
+
+    response = response_info.value
+    if response.ok:
+        print(f"Successfully saved {name}")
+        add_note_to_location(page, name, note)
+    else:
+        print(f"Failed to save {name}, response: {response.status}")
+
+
+def add_note_to_location(page, name, note):
+    if not note:
+        return
+
+    # Click "Add note"
+    add_note_selector = 'button[aria-label^="Add note"]'
+    page.wait_for_selector(add_note_selector, state="visible")
+    page.click(add_note_selector)
+
+    # Add note to text box
+    textarea_selector = page.wait_for_selector("textarea")
+    textarea_selector.type(note)
+
+    # Click "Done" and wait for response
+    with page.expect_response(
+        lambda response: "/maps/preview/entitylist/updateitem" in response.url
+        and response.status == 200
+    ) as response_info:
+        page.click("text=Done")
+
+    response = response_info.value
+    if response.ok:
+        print(f"Successfully added note for {name}")
+    else:
+        print(f"Failed to add note for {name}")
 
 
 def save_locations_to_gmaps(gmaps_locations):
@@ -97,50 +200,11 @@ def save_locations_to_gmaps(gmaps_locations):
         context = browser.new_context()
         page = context.new_page()
 
-        # Go to Google login page and wait for user to log in
-        page.goto("https://accounts.google.com/signin")
-        page.wait_for_url("https://myaccount.google.com/*")
-        print("Login successful")
+        login_to_google(page)
 
-        # Iterate through location links, saving each one to "Want to go" or
-        # skipping if it's already saved
-        for name, link in gmaps_locations:
-            page.goto(link)
-
-            # Wait for either the "Save" or "Saved" button to become visible
-            save_button_selector = 'button[data-value="Save"]'
-            saved_button_selector = 'button[data-value^="Saved"]'
-            page.wait_for_selector(
-                f"{save_button_selector}, {saved_button_selector}",
-                state="visible",
-            )
-
-            if page.is_visible(save_button_selector):
-                # Click "Save" and wait for response
-                with page.expect_response(
-                    lambda response: "/maps/preview/entitylist/createitem"
-                    in response.url
-                    and response.status == 200
-                ) as response_info:
-                    page.click(save_button_selector)
-
-                    # Save location to "Want to go"
-                    want_to_go_selector = (
-                        "xpath=//div[text()='Want to go']"
-                        "/ancestor::div[@role='menuitemradio']"
-                    )
-                    page.wait_for_selector(want_to_go_selector, state="visible")
-                    page.click(want_to_go_selector)
-
-                response = response_info.value
-                if response.ok:
-                    print(f"Successfully saved {name}")
-                else:
-                    print(f"Failed to save {name}, response: {response.status}")
-            elif page.is_visible(saved_button_selector):
-                print(f"{name} is already saved")
-            else:
-                print(f"No 'Save' or 'Saved' button found for {name}")
+        for name, link, note in gmaps_locations:
+            if is_new_location(page, name, link):
+                save_new_location(page, name, note)
 
         browser.close()
 
@@ -150,9 +214,14 @@ if __name__ == "__main__":
     locations = get_locations_from_photos()
 
     # Retrieve Google Maps data for each location
-    gmaps_locations = []
+    screenshot_data = []
     for location in locations:
-        gmaps_locations.append(get_gmaps_info(location))
+        data = location.split(";")
+        location_data = data[0]
+        note = data[1]
+
+        name, link = get_gmaps_info(location_data)
+        screenshot_data.append(ScreenshotData(name=name, link=link, note=note))
 
     # Save all locations to user's "Want to go" list in Google Maps
-    save_locations_to_gmaps(gmaps_locations)
+    save_locations_to_gmaps(screenshot_data)
