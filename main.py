@@ -1,6 +1,7 @@
 import base64
 import collections
 import json
+import mimetypes
 import os
 import requests
 
@@ -8,42 +9,46 @@ from playwright.sync_api import sync_playwright
 
 LOCAL_PHOTO_DIR = "test_dir"
 VISION_PROMPT = """
-You will be fed a set of screenshots.
+You will be fed a set of screenshots. They should be references to a location,
+person, or company. Identify what location, person, or company is in the image,
+i.e. what the subject of the image is. I want you to respond with a line of the
+following form for each screenshot:
 
-Identify the location of each image. Respond only with the names of the
-locations and any supplemental identifying information like address or city.
-The name and other identifying information should be separated by comma.
+<subject type>;<subject name>;<source>, <additional source info>
 
-If you can identify the source of the image, add that to the line separated by
-semicolon. A source is the person or account that shared the location in the
-screenshot. For example, it might be the handle of the Instagram account that
-shared the place (usually right above/below a screenshotted post, or in the
-upper left corner of a screenshotted Instagram story). If you can't identify the
+Let's break down each part of the line:
+
+<subject type> -> Choose from "LOCATION", "PERSON", "COMPANY", or "UNKNOWN" if
+it's not clear.
+
+<subject name> -> The name of the location, person, or company. If it's a
+location, you can also include any supplemental identifying information (like
+city or address).
+
+<source> -> The person or account that shared the subject. For example, the
+handle of the Instagram account that shared the subject (usually in the upper
+left corner of an Instagram story or right above/below a screenshotted post).
+Or it could be the handle of the Twitter account that shared the subject
+(usually right above the screenshotted Tweet). If you can't identify the
 account, you can respond with the platform it was shared on (Twitter, Instagram,
 etc.), but you should try to be as specific as possible.
 
-If there is additional information or details from the source, also add that to
-the line, separated by comma + space from the source if there is one, otherwise
-separated by semicolon from the location information. Additional information
-might be specific dishes that are recommended at the location or anything else
-that has been said about the location in the image. Enclose their commentary in
-quotes.
+<additional source info> -> Any additional information about the subject,
+separated from the source by a comma + space. For a location, this might be
+specific dishes that are recommended or anything else that has been said about
+it. For a person, it might be where they work or anything notable about them.
+For a company, it might be a description of what the company does. Enclose any
+commentary from the source in quotes.
 
-Even if there is no additional information, you should still add a semicolon
-after the location data.
-
-So each line should be of the form:
-<location>,<supplemental info>;<source>, <additional info>
-
-There should never be two consecutive semicolons.
-
-Separate by new line and do not enumerate them.
+You should end up with one line per image, separated by new line. Do not
+enumerate them.
 
 For example, the response might look like:
-Mala Project, 122 1st Ave., New York, NY 10009;Shared on Instagram
-Black Fox Coffee, New York;Shared on Twitter by @myfriend
-Udupi Palace;Shared on Instagram by @myfriend, \"I love the mysore masala dosa\"
-California Wine Merchant;
+LOCATION;Mala Project, 122 1st Ave., New York, NY 10009;Shared on Instagram
+PERSON;Anthony Bourdain;Shared on Twitter
+LOCATION;Black Fox Coffee, New York;Shared on Twitter by @myfriend
+COMPANY;OpenAI;Shared on Twitter, U.S. based AI research organization
+LOCATION;Udupi Palace;Shared on Instagram by @myfriend, \"Get the podi dosa!\"
 """
 
 ScreenshotData = collections.namedtuple("ScreenshotData", ["name", "link", "note"])
@@ -54,7 +59,7 @@ def encode_image(image_path: str):
         return base64.b64encode(image_file.read()).decode("utf-8")
 
 
-def get_locations_from_photos(photo_dir_path: str = LOCAL_PHOTO_DIR):
+def get_subjects_from_photos(photo_dir_path: str = LOCAL_PHOTO_DIR):
     """
     Extracts locations from the photos in the given directory with GPT-4 vision.
     Returns the list of locations separated by new line.
@@ -79,11 +84,17 @@ def get_locations_from_photos(photo_dir_path: str = LOCAL_PHOTO_DIR):
 
     # Iterate through test dir, appending photos to message content
     for file_path in os.listdir(photo_dir_path):
+        if file_path == ".DS_Store":
+            continue
+
         encoded_image = encode_image(f"{photo_dir_path}/{file_path}")
+        mime_type, _ = mimetypes.guess_type(file_path)
+        file_type = mime_type.split("/")[-1]
+
         message_content.append(
             {
                 "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{encoded_image}"},
+                "image_url": {"url": f"data:image/{file_type};base64,{encoded_image}"},
             }
         )
     payload["messages"][0]["content"] = message_content
@@ -94,9 +105,9 @@ def get_locations_from_photos(photo_dir_path: str = LOCAL_PHOTO_DIR):
         json=payload,
     )
     response_content = response.json()["choices"][0]["message"]["content"]
-    locations = [line for line in response_content.splitlines() if line]
+    subjects = [line for line in response_content.splitlines() if line]
 
-    return locations
+    return subjects
 
 
 def get_gmaps_info(location: str):
@@ -210,18 +221,28 @@ def save_locations_to_gmaps(gmaps_locations):
 
 
 if __name__ == "__main__":
-    # Extract locations from photos
-    locations = get_locations_from_photos()
+    subjects = get_subjects_from_photos()
+    locations = []
+    people = []
+    companies = []
 
-    # Retrieve Google Maps data for each location
-    screenshot_data = []
-    for location in locations:
-        data = location.split(";")
-        location_data = data[0]
-        note = data[1]
+    for subject in subjects:
+        parts = subject.split(";")
+        subject_type = parts[0]
+        subject_name = parts[1]
+        subject_source = parts[2]
 
-        name, link = get_gmaps_info(location_data)
-        screenshot_data.append(ScreenshotData(name=name, link=link, note=note))
+        if subject_type == "LOCATION":
+            # Retrieve location name and link from Google Maps
+            name, link = get_gmaps_info(subject_name)
+            locations.append(ScreenshotData(name=name, link=link, note=subject_source))
+        elif subject_type == "PERSON":
+            people.append((subject_name, subject_source))
+        elif subject_type == "COMPANY":
+            companies.append((subject_name, subject_source))
+        else:
+            print(f"Unknown type {subject_type} for {subject_name}")
 
-    # Save all locations to user's "Want to go" list in Google Maps
-    save_locations_to_gmaps(screenshot_data)
+    save_locations_to_gmaps(locations)
+    # TODO: Save people to Notion database
+    # TODO: Save companies to Notion database
