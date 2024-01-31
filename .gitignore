@@ -1,0 +1,11 @@
+# General
+.DS_Store
+__pycache__/
+.python-version
+
+# Directories
+venv/
+test_*/
+
+# Specific file types
+*.pyc
