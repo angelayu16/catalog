@@ -16,7 +16,12 @@ def handle_entities(entities: list, entity_type: str):
 
     # TODO: Check if Notion database exists first, create one if it doesn't
     for name, note in entities:
-        link = get_entity_link(name)
+        # 'note' should be of the form "Shared on <platform, ..." where the
+        # part following the comma contains additional context on the entity.
+        # We'll include this in the query to increase our chances of grabbing
+        # the right link.
+        query = f"{name}{note[note.find(",")+1:]}"
+        link = get_entity_link(query)
         link = utils.remove_query_from_link(link)
 
         # TODO: Account for duplicate entries in Notion database
@@ -26,7 +31,7 @@ def handle_entities(entities: list, entity_type: str):
             print(f"Error saving {name} to Notion")
 
 
-def get_entity_link(name: str):
+def get_entity_link(query: str):
     """
     Returns a link for the entity based on a Google search of its name.
     """
@@ -34,7 +39,7 @@ def get_entity_link(name: str):
         api_key=os.environ["SERP_API_KEY"],
     )
     result = client.search(
-        q=name,
+        q=query,
         engine="google",
         hl="en",
         gl="us",
@@ -42,9 +47,11 @@ def get_entity_link(name: str):
 
     # Prefer a Twitter link if it exists, otherwise just grab the first result
     if "twitter_results" in result:
-        return result["twitter_results"]["link"]
+        link = result["twitter_results"]["link"]
     else:
-        return result["organic_results"][0]["link"]
+        link = result["organic_results"][0]["link"]
+
+    return link
 
 
 def save_entity_to_notion(entity_type: str, name: str, link: str, note: str):
