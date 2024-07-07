@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Catalog</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Upload Images</h1>
+        <form action="/upload" method="post" enctype="multipart/form-data" class="upload-form">
+            <label for="file-upload" class="file-label">
+                <span id="file-label-text">Choose Files</span>
+            </label>
+            <input id="file-upload" type="file" name="images" multiple required>
+            <button type="submit" class="btn">Upload</button>
+        </form>
+    </div>
+
+    <!-- Display file name / number of files chosen -->
+    <script>
+        document.getElementById('file-upload').addEventListener('change', function() {
+            var files = this.files;
+            var fileLabelText = document.getElementById('file-label-text');
+    
+            if (files.length > 1) {
+                fileLabelText.textContent = files.length + ' files selected';
+            } else if (files.length === 1) {
+                fileLabelText.textContent = files[0].name;
+            } else {
+                fileLabelText.textContent = 'Choose Files';
+            }
+        });
+    </script>    
+</body>
+</html>

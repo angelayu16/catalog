@@ -50,7 +50,8 @@ location;Udupi Palace;Shared on Instagram by @myfriend, \"Get the podi dosa!\"
 openai_client = OpenAI()
 
 
-def get_subjects_from_photos(photo_dir_path: str = config.LOCAL_PHOTO_DIR):
+def get_subjects_from_photos(images=None,
+                             photo_dir_path: str = config.LOCAL_PHOTO_DIR):
     """
     Extracts locations from the photos in the given directory with GPT-4 vision.
     Returns the list of locations separated by new line.
@@ -62,20 +63,30 @@ def get_subjects_from_photos(photo_dir_path: str = config.LOCAL_PHOTO_DIR):
 
     message_content = [{"type": "text", "text": VISION_PROMPT}]
 
-    # Iterate through test directory, appending photos to message content
-    for file_path in os.listdir(photo_dir_path):
-        if file_path == ".DS_Store":
-            continue
+    if not images:
+        # Process test directory
+        for file_path in os.listdir(photo_dir_path):
+            if file_path == ".DS_Store":
+                continue
 
-        image = utils.encode_image(f"{photo_dir_path}/{file_path}")
-        file_type = utils.get_file_type(file_path)
+            image = utils.encode_image(f"{photo_dir_path}/{file_path}")
+            file_type = utils.get_file_type(file_path)
 
-        message_content.append(
-            {
-                "type": "image_url",
-                "image_url": {"url": f"data:image/{file_type};base64,{image}"},
-            }
-        )
+            message_content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/{file_type};base64,{image}"},
+                }
+            )
+    else:
+        # Process uploaded images
+        for image in images:
+            message_content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url":f"data:image/{image.file_type};base64,{image.image_content}"},
+                }
+            )
 
     response = openai_client.chat.completions.create(
         model="gpt-4o",

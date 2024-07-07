@@ -29,7 +29,10 @@ def categorize_subjects(subjects: list):
     return locations, people, companies
 
 
-def main():
+def process_directory():
+    """
+    Processes images from a test directory.
+    """
     subjects = vision_handler.get_subjects_from_photos()
 
     locations, people, companies = categorize_subjects(subjects)
@@ -38,8 +41,23 @@ def main():
     entity_handler.handle_entities(people, "person")
     entity_handler.handle_entities(companies, "company")
 
-    print("Completed script")
+    print("Finished processing directory")
+
+
+def process_images(images):
+    """
+    Processes uploaded images.
+    """
+    subjects = vision_handler.get_subjects_from_photos(images)
+
+    locations, people, companies = categorize_subjects(subjects)
+
+    entity_handler.handle_entities(locations, "location")
+    entity_handler.handle_entities(people, "person")
+    entity_handler.handle_entities(companies, "company")
+
+    print("Finished processing images")
 
 
 if __name__ == "__main__":
-    main()
+    process_directory()
