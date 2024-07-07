@@ -4,7 +4,12 @@ import requests
 import serpapi
 
 from datetime import datetime
+from subjects import location_handler
 from utils import utils
+
+serp_client = serpapi.Client(
+    api_key=os.environ["SERP_API_KEY"],
+)
 
 
 def handle_entities(entities: list, entity_type: str):
@@ -16,13 +21,18 @@ def handle_entities(entities: list, entity_type: str):
 
     # TODO: Check if Notion database exists first, create one if it doesn't
     for name, note in entities:
-        # 'note' should be of the form "Shared on <platform, ..." where the
-        # part following the comma contains additional context on the entity.
-        # We'll include this in the query to increase our chances of grabbing
-        # the right link.
-        query = f"{name}{note[note.find(",")+1:]}"
-        link = get_entity_link(query)
-        link = utils.remove_query_from_link(link)
+        query = name
+
+        # Add more context to the query for people/companies
+        if entity_type == "person" or entity_type == "company":
+            handle = utils.get_handle_from_note(note)
+            if handle:
+                query += " " + handle
+            query += " twitter"
+
+        link = get_entity_link(query, entity_type)
+        if entity_type == "person" or entity_type == "company":
+            link = utils.remove_query_from_link(link)
 
         # TODO: Account for duplicate entries in Notion database
         response_code = save_entity_to_notion(entity_type, name, link, note)
@@ -31,25 +41,26 @@ def handle_entities(entities: list, entity_type: str):
             print(f"Error saving {name} to Notion")
 
 
-def get_entity_link(query: str):
+def get_entity_link(query: str, entity_type: str):
     """
     Returns a link for the entity based on a Google search of its name.
     """
-    client = serpapi.Client(
-        api_key=os.environ["SERP_API_KEY"],
-    )
-    result = client.search(
-        q=query,
-        engine="google",
-        hl="en",
-        gl="us",
-    )
+    if entity_type == "location":
+        # If this is a location, retrieve the Google Maps link
+        place_name, link = location_handler.get_gmaps_info(query)
+    elif entity_type == "person" or entity_type == "company":
+        result = serp_client.search(
+            q=query,
+            engine="google",
+            hl="en",
+            gl="us",
+        )
 
-    # Prefer a Twitter link if it exists, otherwise just grab the first result
-    if "twitter_results" in result:
-        link = result["twitter_results"]["link"]
-    else:
-        link = result["organic_results"][0]["link"]
+        # Prefer a Twitter link if it exists, otherwise just grab the first result
+        if "twitter_results" in result:
+            link = result["twitter_results"]["link"]
+        else:
+            link = result["organic_results"][0]["link"]
 
     return link
 

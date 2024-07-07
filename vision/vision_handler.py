@@ -1,7 +1,7 @@
 import config
 import os
-import requests
 
+from openai import OpenAI
 from utils import utils
 
 VISION_PROMPT = """
@@ -47,6 +47,8 @@ company;OpenAI;Shared on Twitter, U.S. based AI research organization
 location;Udupi Palace;Shared on Instagram by @myfriend, \"Get the podi dosa!\"
 """
 
+openai_client = OpenAI()
+
 
 def get_subjects_from_photos(photo_dir_path: str = config.LOCAL_PHOTO_DIR):
     """
@@ -58,15 +60,6 @@ def get_subjects_from_photos(photo_dir_path: str = config.LOCAL_PHOTO_DIR):
     """
     print("Handling photos...")
 
-    payload = {
-        "model": "gpt-4-vision-preview",
-        "messages": [
-            {
-                "role": "user",
-            }
-        ],
-        "max_tokens": 300,
-    }
     message_content = [{"type": "text", "text": VISION_PROMPT}]
 
     # Iterate through test directory, appending photos to message content
@@ -83,14 +76,18 @@ def get_subjects_from_photos(photo_dir_path: str = config.LOCAL_PHOTO_DIR):
                 "image_url": {"url": f"data:image/{file_type};base64,{image}"},
             }
         )
-    payload["messages"][0]["content"] = message_content
 
-    response = requests.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers=config.OPENAI_HEADERS,
-        json=payload,
+    response = openai_client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {
+                "role": "user",
+                "content": message_content,
+            }
+        ],
+        max_tokens=300,
     )
-    response_content = response.json()["choices"][0]["message"]["content"]
+    response_content = response.choices[0].message.content
     subjects = [line for line in response_content.splitlines() if line]
 
     return subjects

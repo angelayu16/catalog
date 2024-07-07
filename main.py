@@ -1,5 +1,4 @@
 from subjects import entity_handler
-from subjects import location_handler
 from vision import vision_handler
 
 
@@ -35,7 +34,7 @@ def main():
 
     locations, people, companies = categorize_subjects(subjects)
 
-    location_handler.handle_locations(locations)
+    entity_handler.handle_entities(locations, "location")
     entity_handler.handle_entities(people, "person")
     entity_handler.handle_entities(companies, "company")
 
